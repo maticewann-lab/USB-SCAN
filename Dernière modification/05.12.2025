@@ -1,0 +1,401 @@
+# -*- coding: utf-8 -*-
+# Cette ligne indique que le fichier utilise l'encodage UTF-8 pour gérer les caractères spéciaux (accents, symboles, etc.)
+
+# Importation des bibliothèques nécessaires
+import webbrowser  # Permet d'ouvrir automatiquement un fichier HTML dans le navigateur par défaut
+import os  # Permet d'interagir avec le système d'exploitation (fichiers, dossiers, chemins, etc.)
+import html  # Permet d'échapper les caractères spéciaux pour qu'ils s'affichent correctement en HTML
+import platform  # Permet de détecter le système d'exploitation (Windows, Linux, macOS) et d'autres informations système
+import subprocess  # Permet d'exécuter des commandes système (comme PowerShell, lsusb, etc.)
+import re  # Permet d'utiliser les expressions régulières pour analyser du texte
+import sys  # Permet d'interagir avec l'interpréteur Python (par exemple, pour gérer la sortie standard)
+import io  # Permet de gérer les flux d'entrée/sortie (par exemple, pour corriger l'encodage sous Windows)
+from datetime import datetime  # Permet d'obtenir la date et l'heure actuelles
+  
+# Correction de l'encodage sous Windows
+# Sous Windows, la sortie standard peut avoir des problèmes d'encodage.
+# Cette ligne force l'encodage UTF-8 pour éviter les erreurs d'affichage des caractères spéciaux.
+if platform.system() == "Windows":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+# Fonction : Détecter les ports USB
+def detecter_ports_usb():
+    """
+    Cette fonction détecte tous les ports USB connectés à l'ordinateur.
+    Elle utilise des commandes différentes selon le système d'exploitation (Windows, Linux, macOS).
+    Elle retourne une liste de dictionnaires, où chaque dictionnaire contient les informations d'un port USB.
+    """
+    systeme = platform.system()  # Détecte le système d'exploitation (Windows, Linux, Darwin pour macOS)
+    ports_usb = []  # Liste vide pour stocker les informations des ports USB
+
+    try:
+        # Détection des ports USB sous Windows
+        if systeme == "Windows":
+            # Commande PowerShell pour lister les périphériques USB
+            cmd = ['powershell', '-Command', 'Get-PnpDevice -Class USB | Select-Object Status, FriendlyName, InstanceId']
+            # Exécution de la commande et récupération de la sortie
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+            # Si la commande s'est exécutée sans erreur
+            if result.returncode == 0:
+                # On analyse chaque ligne de la sortie (en ignorant les 3 premières lignes qui sont des en-têtes)
+                for ligne in result.stdout.strip().split('\n')[3:]:
+                    if ligne.strip():  # Si la ligne n'est pas vide
+                        parts = ligne.split(maxsplit=2)  # On divise la ligne en 3 parties maximum
+                        if len(parts) >= 3:  # Si on a bien 3 parties (Statut, Nom, InstanceId)
+                            ports_usb.append({
+                                "nom": parts[1].strip(),  # Nom du périphérique USB
+                                "status": parts[0].strip(),  # Statut du périphérique (OK, Erreur, etc.)
+                                "instance_id": parts[2].strip(),  # Identifiant unique du périphérique
+                                "type": "USB"  # Type de périphérique
+                            })
+
+        # Détection des ports USB sous Linux
+    
+        elif systeme == "Linux":
+            # Commande lsusb pour lister les périphériques USB
+            result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=10)
+
+            # Si la commande s'est exécutée sans erreur
+            if result.returncode == 0:
+                # On analyse chaque ligne de la sortie
+                for ligne in result.stdout.strip().split('\n'):
+                    if ligne.strip():  # Si la ligne n'est pas vide
+                        # On utilise une expression régulière pour extraire le nom du périphérique
+                        match = re.search(r'Bus\s+\d+\s+Device\s+\d+:\s+ID\s+[\w:]+\s+(.+)', ligne)
+                        if match:  # Si on a trouvé une correspondance
+                            ports_usb.append({
+                                "nom": match.group(1).strip(),  # Nom du périphérique USB
+                                "status": "OK",  # Statut par défaut
+                                "instance_id": ligne.split(':')[0].strip(),  # Identifiant du bus USB
+                                "type": "USB"  # Type de périphérique
+                            })
+
+        # Détection des ports USB sous macOS
+        
+        elif systeme == "Darwin":  # "Darwin" est le nom du noyau de macOS
+            # Commande system_profiler pour lister les périphériques USB
+            result = subprocess.run(['system_profiler', 'SPUSBDataType'], capture_output=True, text=True, timeout=10)
+
+            # Si la commande s'est exécutée sans erreur
+            if result.returncode == 0:
+                lignes = result.stdout.split('\n')  # On divise la sortie en lignes
+                current_device = {}  # Dictionnaire temporaire pour stocker les informations d'un périphérique
+
+                # On analyse chaque ligne de la sortie
+                for ligne in lignes:
+                    if 'Product ID:' in ligne:  # Si la ligne contient "Product ID:"
+                        if current_device:  # Si on a déjà un périphérique en cours, on l'ajoute à la liste
+                            ports_usb.append(current_device)
+                        # On initialise un nouveau dictionnaire pour le périphérique actuel
+                        current_device = {
+                            "nom": ligne.split(':')[1].strip(),  # Nom du périphérique
+                            "status": "OK",  # Statut par défaut
+                            "instance_id": "",  # Identifiant du périphérique (vide pour l'instant)
+                            "type": "USB"  # Type de périphérique
+                        }
+                    elif 'Vendor ID:' in ligne:  # Si la ligne contient "Vendor ID:"
+                        current_device["instance_id"] = ligne.split(':')[1].strip()  # On ajoute l'identifiant du vendeur
+
+                # On ajoute le dernier périphérique s'il existe
+                if current_device:
+                    ports_usb.append(current_device)
+
+    # Si une erreur survient pendant la détection des ports USB
+    except Exception as e:
+        print(f"⚠ Erreur lors de la détection USB : {str(e)}")
+
+    return ports_usb  # Retourne la liste des ports USB détectés
+
+# Fonction : Analyser le système
+def analyser_systeme():
+    """
+    Cette fonction analyse le système et les ports USB.
+    Elle retourne un dictionnaire avec les informations système et les détails des ports USB.
+    """
+    try:
+        # Vérifie si l'utilisateur est administrateur
+        # Sous Windows, on utilise ctypes.windll.shell32.IsUserAnAdmin()
+        # Sous Linux/macOS, on vérifie si l'UID est 0 (root)
+        est_admin = (ctypes.windll.shell32.IsUserAnAdmin() != 0) if platform.system() == "Windows" else (os.geteuid() == 0)
+    except:
+        est_admin = False  # Par défaut, on considère que l'utilisateur n'est pas administrateur
+
+    print("🔍 Analyse des ports USB en cours...")
+
+    # Retourne un dictionnaire avec les informations système et les ports USB
+    return {
+        "systeme": platform.system(),  # Système d'exploitation (Windows, Linux, Darwin)
+        "version": platform.version(),  # Version du système
+        "processeur": platform.processor(),  # Type de processeur
+        "ports_usb_details": detecter_ports_usb(),  # Détails des ports USB
+        "nb_usb": len(detecter_ports_usb()),  # Nombre de ports USB détectés
+        "est_admin": est_admin  # True si l'utilisateur est administrateur, False sinon
+    }
+
+# Fonction : Afficher les informations système
+def afficher_infos_systeme(infos):
+    """
+    Cette fonction affiche les informations système dans la console.
+    """
+    print("\nAnalyse du système en cours...\n")
+    print(f"Système détecté : {infos['systeme']}")  # Affiche le système d'exploitation
+    print(f"Version : {infos['version']}")  # Affiche la version du système
+    print(f"Processeur : {infos['processeur']}")  # Affiche le type de processeur
+    print(f"Nombre de ports USB détectés : {infos['nb_usb']}")  # Affiche le nombre de ports USB
+    # Affiche le type de compte (administrateur ou utilisateur standard)
+    print(f"Type de compte : {'👑 Administrateur' if infos['est_admin'] else '👤 Utilisateur standard'}")
+
+# Fonction : Générer le contenu HTML du rapport
+def generer_html(reponses):
+    """
+    Cette fonction génère le contenu HTML du rapport d'analyse.
+    Elle prend en entrée une liste de réponses (analyses) et retourne une chaîne de caractères contenant le HTML.
+    """
+    # Début du contenu HTML avec le style CSS intégré
+    contenu = f"""
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Rapport d'analyse système</title>
+        <style>
+            /* Styles CSS pour rendre le rapport joli et lisible */
+            body {{
+                font-family: Arial, sans-serif;
+                margin: 20px;
+                background-color: #f5f5f5;
+            }}
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+                background-color: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }}
+            h1, h2 {{
+                color: #333;
+                border-bottom: 2px solid #4CAF50;
+                padding-bottom: 10px;
+            }}
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+                margin-top: 20px;
+                font-size: 0.9em;
+            }}
+            th, td {{
+                border: 1px solid #ddd;
+                padding: 10px;
+                text-align: left;
+            }}
+            th {{
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+            }}
+            tr:nth-child(even) {{
+                background-color: #f9f9f9;
+            }}
+            tr:hover {{
+                background-color: #f1f1f1;
+            }}
+            .badge {{
+                display: inline-block;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 0.85em;
+                font-weight: bold;
+            }}
+            .badge-admin {{
+                background-color: #ff9800;
+                color: white;
+            }}
+            .badge-user {{
+                background-color: #2196F3;
+                color: white;
+            }}
+            .footer {{
+                margin-top: 20px;
+                text-align: center;
+                color: #666;
+                font-size: 0.9em;
+            }}
+            .usb-details {{
+                margin-top: 20px;
+                background-color: #f9f9f9;
+                padding: 15px;
+                border-radius: 5px;
+            }}
+            .usb-details h3 {{
+                margin-top: 0;
+                color: #4CAF50;
+            }}
+            .usb-table {{
+                margin-top: 10px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>📊 Historique des analyses USB</h1>
+            <p><strong>Nombre total d'analyses :</strong> {len(reponses)}</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Nom d'utilisateur</th>
+                        <th>Prénom d'utilisateur</th>
+                        <th>Numéro de Poste</th>
+                        <th>Type de compte</th>
+                        <th>Système</th>
+                        <th>Processeur</th>
+                        <th>Nombre de ports USB</th>
+                        <th>Date et Heure</th>
+                    </tr>
+                </thead>
+                <tbody>
+    """
+
+    # Pour chaque analyse dans la liste des réponses
+    for idx, rtest in enumerate(reponses, 1):
+        # Détermine la classe CSS pour le badge (administrateur ou utilisateur)
+        badge_class = "badge-admin" if rtest['est_admin'] else "badge-user"
+        badge_text = "Administrateur" if rtest['est_admin'] else "Utilisateur"
+
+        # Ajoute une ligne au tableau pour cette analyse
+        contenu += f"""
+                    <tr>
+                        <td>{idx}</td>
+                        <td>{html.escape(rtest['nom_utilisateur'])}</td>
+                        <td>{html.escape(rtest['prenom_utilisateur'])}</td>
+                        <td>{html.escape(rtest['poste'])}</td>
+                        <td><span class="badge {badge_class}">{badge_text}</span></td>
+                        <td>{html.escape(rtest['systeme'])}</td>
+                        <td>{html.escape(rtest['processeur'])}</td>
+                        <td>{html.escape(str(rtest['nb_usb']))}</td>
+                        <td>{html.escape(rtest['date_heure'])}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="9" class="usb-details">
+                            <h3>🔌 Détails des ports USB</h3>
+                            <table class="usb-table">
+                                <thead>
+                                    <tr>
+                                        <th>Nom</th>
+                                        <th>Statut</th>
+                                        <th>ID</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+        """
+
+        # Pour chaque port USB de cette analyse
+        for usb in rtest['ports_usb_details']:
+            # Ajoute une ligne pour ce port USB
+            contenu += f"""
+                                    <tr>
+                                        <td>{html.escape(usb['nom'])}</td>
+                                        <td>{html.escape(usb['status'])}</td>
+                                        <td>{html.escape(usb.get('instance_id', 'N/A'))}</td>
+                                    </tr>
+            """
+
+        # Fermeture des balises pour cette analyse
+        contenu += """
+                                </tbody>
+                            </table>
+                        </td>
+                    </tr>
+        """
+
+    # Fermeture des balises HTML
+    contenu += """
+                </tbody>
+            </table>
+            <div class="footer">
+                <p>Rapport généré automatiquement le """ + datetime.now().strftime("%d/%m/%Y à %H:%M:%S") + """</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return contenu  # Retourne le contenu HTML généré
+
+# Fonction : Sauvegarder et ouvrir le rapport
+
+def sauvegarder_et_ouvrir_rapport(reponses):
+    """
+    Cette fonction sauvegarde le rapport HTML dans un fichier et l'ouvre dans le navigateur par défaut.
+    """
+    fichier_html = "rapport_usb.html"  # Nom du fichier HTML
+    # Écrit le contenu HTML dans le fichier
+    with open(fichier_html, "w", encoding="utf-8") as f:
+        f.write(generer_html(reponses))
+
+    chemin_absolu = os.path.abspath(fichier_html)  # Récupère le chemin absolu du fichier
+    print(f"\n✓ Rapport généré : {chemin_absolu}")  # Affiche le chemin du rapport
+    webbrowser.open("file://" + chemin_absolu)  # Ouvre le rapport dans le navigateur par défaut
+
+
+# Fonction principale : main()
+
+def main():
+    """
+    Fonction principale du programme.
+    Elle gère l'interaction avec l'utilisateur et exécute les analyses.
+    """
+    reponses_utilisateur = []  # Liste pour stocker les analyses effectuées
+
+    # Affiche un en-tête pour le programme
+    print("=" * 50 + "\n   ANALYSEUR DE SYSTÈME USB\n" + "=" * 50)
+
+    # Boucle principale pour permettre plusieurs analyses
+    while True:
+        print("\n" + "-" * 50)
+        # Demande les informations de l'utilisateur
+        nom_utilisateur = input("Nom d'utilisateur : ").strip()
+        prenom_utilisateur = input("Prénom d'utilisateur : ").strip()
+        poste = input("Nom du poste ou numéro de poste : ").strip()
+
+        # Message de bienvenue personnalisé
+        print(f"\n👋 {'Te revoilà' if nom_utilisateur.lower() == 'camara' and prenom_utilisateur.lower() == 'ali' else 'Bonjour'}, {prenom_utilisateur} {nom_utilisateur} !")
+
+        # Analyse le système et les ports USB
+        infos_systeme = analyser_systeme()
+        afficher_infos_systeme(infos_systeme)
+
+        # Ajoute les informations de cette analyse à la liste
+        reponses_utilisateur.append({
+            "nom_utilisateur": nom_utilisateur,
+            "prenom_utilisateur": prenom_utilisateur,
+            "poste": poste,
+            "systeme": infos_systeme["systeme"],
+            "processeur": infos_systeme["processeur"],
+            "ports_usb_details": infos_systeme["ports_usb_details"],
+            "nb_usb": infos_systeme["nb_usb"],
+            "est_admin": infos_systeme["est_admin"],
+            "date_heure": datetime.now().strftime("%d/%m/%Y %H:%M:%S")  # Date et heure de l'analyse
+        })
+
+        # Demande à l'utilisateur s'il veut refaire une analyse
+        reponse = input("\n🔄 Souhaitez-vous refaire une analyse ? (oui/non) : ").strip().lower()
+        while reponse not in ["oui", "non"]:
+            reponse = input("❌ Réponse invalide. Répondez par 'oui' ou 'non' : ").strip().lower()
+
+        if reponse != "oui":
+            break  # Sort de la boucle si la réponse est "non"
+
+    # Si au moins une analyse a été effectuée, on génère le rapport
+    if reponses_utilisateur:
+        sauvegarder_et_ouvrir_rapport(reponses_utilisateur)
+        print("\n👋 Au revoir !")
+    else:
+        print("\n⚠ Aucune analyse effectuée.")
+
+# Point d'entrée du programme
+if __name__ == "__main__":
+    import ctypes  # Importation nécessaire pour vérifier les droits administrateur sous Windows
+    main()  # Appelle la fonction principale pour démarrer le programme
